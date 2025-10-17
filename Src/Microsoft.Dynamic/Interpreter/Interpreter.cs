@@ -83,19 +83,35 @@ namespace Microsoft.Scripting.Interpreter {
         /// </remarks>
         [SpecialName, MethodImpl(MethodImplOptions.NoInlining)]
         public void Run(InterpretedFrame frame) {
+            int exceptionDepth = 0;
+            Exception lastExeption = null;
             while (true) {
                 try {
                     var instructions = Instructions.Instructions;
                     int index = frame.InstructionIndex;
                     while (index < instructions.Length) {
-                        index += instructions[index].Run(frame);
+                        var curInstr = instructions[index];
+                        index += curInstr.Run(frame);
                         frame.InstructionIndex = index;
+                        if (exceptionDepth > 0 && curInstr is LeaveExceptionHandlerInstruction) {
+                            exceptionDepth -= 1;
+                        }
                     }
+
+                    if (exceptionDepth > 0 && frame.InstructionIndex == RethrowOnReturn) {
+                        throw lastExeption;
+                    }
+
                     return;
                 } catch (Exception exception) {
                     switch (HandleException(frame, exception)) {
                         case ExceptionHandlingResult.Rethrow: throw;
-                        case ExceptionHandlingResult.Continue: continue;
+                        case ExceptionHandlingResult.Continue:
+                            {
+                                exceptionDepth += 1;
+                                lastExeption = exception;
+                                continue;
+                            }
                         case ExceptionHandlingResult.Return: return;
                     }
                 }
@@ -116,7 +132,7 @@ namespace Microsoft.Scripting.Interpreter {
                 }
                 return ExceptionHandlingResult.Return;
             }
-            
+
 #if FEATURE_THREAD
             // stay in the current catch so that ThreadAbortException is not rethrown by CLR:
             if (exception is ThreadAbortException abort) {
@@ -124,37 +140,8 @@ namespace Microsoft.Scripting.Interpreter {
                 frame.CurrentAbortHandler = handler;
             }
 #endif
-            while (true) {
-                try {
-                    var instructions = Instructions.Instructions;
-                    int index = frame.InstructionIndex;
 
-                    while (index < instructions.Length) {
-                        var curInstr = instructions[index];
-
-                        index += curInstr.Run(frame);
-                        frame.InstructionIndex = index;
-                        
-                        if (curInstr is LeaveExceptionHandlerInstruction) {
-                            // we've completed handling of this exception
-                            return ExceptionHandlingResult.Continue;
-                        }
-                    }
-
-                    if (frame.InstructionIndex == RethrowOnReturn) {
-                        return ExceptionHandlingResult.Rethrow;
-                    }
-
-                    return ExceptionHandlingResult.Return;
-                } catch (Exception nestedException) {
-                    switch (HandleException(frame, nestedException)) {
-                        case ExceptionHandlingResult.Rethrow: throw;
-                        case ExceptionHandlingResult.Continue: continue;
-                        case ExceptionHandlingResult.Return: return ExceptionHandlingResult.Return;
-                        default: throw Assert.Unreachable;
-                    }
-                }
-            }
+            return ExceptionHandlingResult.Continue;
         }
 
         enum ExceptionHandlingResult {
